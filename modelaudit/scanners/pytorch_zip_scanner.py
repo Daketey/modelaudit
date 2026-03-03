@@ -858,12 +858,16 @@ class PyTorchZipScanner(BaseScanner):
                         import json
 
                         meta_data = json.loads(zipfile_obj.read(meta_file).decode("utf-8"))
-                        # Look for version fields in metadata
-                        for key in ["pytorch_version", "torch_version", "framework_version", "version"]:
+                        # Look for framework-specific version fields in metadata.
+                        # Avoid generic "version" keys, which often describe model/config
+                        # schema versions and can cause false CVE attributions.
+                        for key in ["pytorch_version", "torch_version", "framework_version"]:
                             if key in meta_data and isinstance(meta_data[key], str):
-                                version_info["pytorch_framework_version"] = meta_data[key]
-                                version_info["pytorch_version_source"] = f"metadata:{meta_file}"
-                                break
+                                candidate = meta_data[key].strip()
+                                if self._looks_like_pytorch_version(candidate):
+                                    version_info["pytorch_framework_version"] = candidate
+                                    version_info["pytorch_version_source"] = f"metadata:{meta_file}:{key}"
+                                    break
                     except (json.JSONDecodeError, UnicodeDecodeError):  # type: ignore[possibly-unresolved-reference]
                         continue
 
@@ -1089,31 +1093,29 @@ class PyTorchZipScanner(BaseScanner):
         """
         try:
             vstr = version.strip()
-            # Match PEP 440 prerelease tags: a0, b1, rc1, dev0, alpha, beta
-            is_prerelease = bool(re.search(r"(\.dev|rc|alpha|beta|\d+a\d+|\d+b\d+)", vstr, re.IGNORECASE))
-            version_match = re.match(r"^(\d+)\.(\d+)\.(\d+)", vstr)
+            version_match = re.match(r"^(\d+)\.(\d+)\.(\d+)(.*)$", vstr)
             if not version_match:
                 return True  # Can't parse, assume vulnerable
 
-            major, minor, patch = map(int, version_match.groups())
+            major, minor, patch = map(int, version_match.groups()[:3])
+            suffix = (version_match.group(4) or "").strip().lower()
 
-            if major < fix_major:
-                return True
-            elif major == fix_major:
-                if minor < fix_minor:
-                    return True
-                elif minor == fix_minor:
-                    if patch < fix_patch:
-                        return True
-                    elif patch == fix_patch:
-                        return is_prerelease  # fix_patch-dev still vulnerable
-                    else:
-                        return False
+            is_prerelease = False
+            if suffix:
+                if re.search(r"(?:^|[.\-])(dev|rc|alpha|beta|pre|preview)\d*", suffix):
+                    is_prerelease = True
+                elif suffix.startswith("+") or suffix.startswith(".post") or suffix.startswith("post"):
+                    is_prerelease = False
                 else:
-                    return False  # minor > fix_minor
-            else:
-                return is_prerelease  # major > fix_major, pre-releases still vulnerable
+                    # Unknown suffix semantics -> conservative
+                    return True
 
+            if (major, minor, patch) < (fix_major, fix_minor, fix_patch):
+                return True
+            if (major, minor, patch) > (fix_major, fix_minor, fix_patch):
+                return False
+            # Equal to fix release: prerelease variants are still vulnerable
+            return is_prerelease
         except Exception:
             return True
 

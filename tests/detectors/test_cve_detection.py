@@ -631,6 +631,16 @@ class TestCVE20245480Detection:
         cve_attrs = [attr for attr in attributions if attr.cve_id == "CVE-2024-5480"]
         assert len(cve_attrs) == 0, "Documentation should not trigger CVE-2024-5480"
 
+    def test_embedded_comment_token_does_not_bypass(self) -> None:
+        """A comment token embedded in exploit content should not bypass detection."""
+        content = "torch.distributed.rpc.rpc_sync('node', fn)\n# harmless comment\neval(payload)"
+        attributions = analyze_cve_patterns(content, b"")
+        cve_attrs = [attr for attr in attributions if attr.cve_id == "CVE-2024-5480"]
+        assert len(cve_attrs) > 0, "Embedded '#' should not bypass detection"
+        assert cve_attrs[0].severity == "CRITICAL"
+        assert cve_attrs[0].cvss == 10.0
+        assert cve_attrs[0].cwe == "CWE-94"
+
 
 class TestCVE202448063Detection:
     """Test detection of CVE-2024-48063 (PyTorch RemoteModule deserialization RCE)."""
@@ -658,6 +668,16 @@ class TestCVE202448063Detection:
 
         cve_attrs = [attr for attr in attributions if attr.cve_id == "CVE-2024-48063"]
         assert len(cve_attrs) == 0, "Documentation should not trigger CVE-2024-48063"
+
+    def test_embedded_comment_token_does_not_bypass(self) -> None:
+        """A comment token embedded in exploit content should not bypass detection."""
+        content = "RemoteModule __reduce__ pickle torch.distributed.rpc\n# harmless comment"
+        attributions = analyze_cve_patterns(content, b"")
+        cve_attrs = [attr for attr in attributions if attr.cve_id == "CVE-2024-48063"]
+        assert len(cve_attrs) > 0, "Embedded '#' should not bypass detection"
+        assert cve_attrs[0].severity == "CRITICAL"
+        assert cve_attrs[0].cvss == 9.8
+        assert cve_attrs[0].cwe == "CWE-502"
 
     def test_detect_remote_module_pickled_pattern(self) -> None:
         """Test detection of remote_module_pickled internal representation."""

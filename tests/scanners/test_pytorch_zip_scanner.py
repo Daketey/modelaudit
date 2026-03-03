@@ -508,7 +508,7 @@ def test_pytorch_zip_cve_2026_24747_version_check(tmp_path: Path) -> None:
         f"Checks: {[(c.name, c.status) for c in result.checks]}"
     )
     assert failed_checks[0].details.get("detected_pytorch_version") == "2.9.0"
-    assert failed_checks[0].details.get("pytorch_version_source") == "metadata:config.json"
+    assert failed_checks[0].details.get("pytorch_version_source") == "metadata:config.json:pytorch_version"
 
 
 def test_pytorch_zip_cve_2026_24747_fixed_version(tmp_path: Path) -> None:
@@ -524,6 +524,39 @@ def test_pytorch_zip_cve_2026_24747_fixed_version(tmp_path: Path) -> None:
     assert len(cve_2026_failed) == 0, (
         f"PyTorch 2.10.0 should NOT trigger CVE-2026-24747. "
         f"Failed checks: {[(c.name, c.message) for c in cve_2026_failed]}"
+    )
+
+
+def test_pytorch_zip_generic_version_metadata_does_not_trigger_cve_version_checks(tmp_path: Path) -> None:
+    """Generic config version keys should not be treated as framework version."""
+    model_path = tmp_path / "model.pt"
+    with zipfile.ZipFile(model_path, "w") as zipf:
+        zipf.writestr("archive/version", "3")
+        zipf.writestr("archive/data.pkl", pickle.dumps({"weights": [1.0, 2.0, 3.0]}))
+        zipf.writestr("config.json", json.dumps({"version": "0.1.0", "model_type": "bert"}))
+
+    scanner = PyTorchZipScanner()
+    result = scanner.scan(str(model_path))
+
+    cve_version_checks = [
+        c
+        for c in result.checks
+        if c.status == CheckStatus.FAILED
+        and "PyTorch Version Check" in c.name
+        and any(
+            cve in c.name
+            for cve in [
+                "CVE-2025-32434",
+                "CVE-2026-24747",
+                "CVE-2022-45907",
+                "CVE-2024-5480",
+                "CVE-2024-48063",
+            ]
+        )
+    ]
+    assert len(cve_version_checks) == 0, (
+        "Generic metadata version should not trigger framework CVE checks. "
+        f"Found: {[(c.name, c.message) for c in cve_version_checks]}"
     )
 
 
@@ -683,3 +716,19 @@ def test_pytorch_zip_cve_2024_48063_fixed_version(tmp_path: Path) -> None:
     assert len(cve_failed) == 0, (
         f"PyTorch 2.5.0 should NOT trigger CVE-2024-48063. Failed checks: {[(c.name, c.message) for c in cve_failed]}"
     )
+
+
+def test_version_suffix_handling_for_cve_checks() -> None:
+    """Version helper should treat unknown suffixes as vulnerable and known post/build as fixed."""
+    scanner = PyTorchZipScanner()
+
+    # Known safe suffixes on fixed base version
+    assert scanner._is_vulnerable_pytorch_version_for("2.2.3+cu118", 2, 2, 3) is False
+    assert scanner._is_vulnerable_pytorch_version_for("2.2.3.post1", 2, 2, 3) is False
+
+    # Known pre-release suffixes on fix version are still vulnerable
+    assert scanner._is_vulnerable_pytorch_version_for("2.2.3rc1", 2, 2, 3) is True
+    assert scanner._is_vulnerable_pytorch_version_for("2.2.3.dev0", 2, 2, 3) is True
+
+    # Unknown suffix semantics -> conservative vulnerable
+    assert scanner._is_vulnerable_pytorch_version_for("2.2.3foobar", 2, 2, 3) is True
