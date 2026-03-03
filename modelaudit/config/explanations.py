@@ -672,6 +672,35 @@ def get_cve_2026_24747_explanation(vulnerability_type: str) -> str:
     )
 
 
+def get_cve_2025_51480_explanation(vulnerability_type: str) -> str:
+    """Get specific explanation for CVE-2025-51480 (ONNX external-data write traversal)."""
+
+    explanations = {
+        "arbitrary_file_overwrite": (
+            "CVE-2025-51480 (CVSS 8.8): onnx.save() with external data can write "
+            "tensor bytes to attacker-controlled external_data locations. If a "
+            "location includes path traversal, saving a malicious model may "
+            "overwrite arbitrary files outside the model directory."
+        ),
+        "path_traversal": (
+            "ONNX external_data locations are file paths. Traversal components "
+            "like '../' can escape the output directory and redirect writes to "
+            "sensitive files when save_external_data is used."
+        ),
+        "onnx_version": (
+            "CVE-2025-51480 affects ONNX versions through 1.17.0. Upgrade to a "
+            "patched version, validate external_data paths, and run model "
+            "processing with least privilege."
+        ),
+    }
+
+    return explanations.get(
+        vulnerability_type,
+        "CVE-2025-51480: ONNX external_data path traversal can enable arbitrary "
+        "file overwrite during save operations.",
+    )
+
+
 def get_cve_2022_45907_explanation(vulnerability_type: str) -> str:
     """Get specific explanation for CVE-2022-45907 vulnerability types."""
 

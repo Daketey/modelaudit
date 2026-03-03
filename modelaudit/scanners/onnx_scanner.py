@@ -11,6 +11,15 @@ from .base import BaseScanner, IssueSeverity, ScanResult
 logger = logging.getLogger("modelaudit.scanners")
 
 
+def _is_contained_in(child: Path, parent: Path) -> bool:
+    """Return True when child resolves under parent directory."""
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
 def _get_onnx_mapping() -> Any:
     """Get ONNX mapping module from different locations depending on version."""
     try:
@@ -275,10 +284,13 @@ class OnnxScanner(BaseScanner):
                     )
                     continue
                 external_path = (model_dir / location).resolve()
-                if not external_path.exists():
-                    missing_files.setdefault(location, []).append(tensor.name)
-                elif not str(external_path).startswith(str(model_dir)):
+                # Check containment before existence so traversal attempts
+                # against missing paths are still classified as traversal.
+                escapes_model_dir = not _is_contained_in(external_path, model_dir)
+                if escapes_model_dir:
                     traversal_files.setdefault(location, []).append(tensor.name)
+                elif not external_path.exists():
+                    missing_files.setdefault(location, []).append(tensor.name)
                 else:
                     if location not in safe_files:
                         safe_files.add(location)
@@ -315,11 +327,13 @@ class OnnxScanner(BaseScanner):
         for location, tensors in traversal_files.items():
             external_path = (model_dir / location).resolve()
             result.add_check(
-                name="External Data Path Traversal Check",
+                name="CVE-2025-51480: External Data Write Path Traversal",
                 passed=False,
                 message=(
-                    f"External data file outside model directory: {location} "
-                    f"({len(tensors)} tensor{'s' if len(tensors) != 1 else ''} affected)"
+                    f"CVE-2025-51480: External data path traversal for "
+                    f"'{location}' ({len(tensors)} tensor"
+                    f"{'s' if len(tensors) != 1 else ''} affected) can enable "
+                    "arbitrary file overwrite when saving"
                 ),
                 severity=IssueSeverity.CRITICAL,
                 location=str(external_path),
@@ -327,7 +341,26 @@ class OnnxScanner(BaseScanner):
                     "file": location,
                     "affected_tensor_count": len(tensors),
                     "sample_tensors": tensors[:5],
+                    "cve_id": "CVE-2025-51480",
+                    "cvss": 8.8,
+                    "cwe": "CWE-22",
+                    "description": (
+                        "ONNX save_external_data writes tensor data to paths "
+                        "from external_data location fields. Path traversal "
+                        "can overwrite arbitrary files."
+                    ),
+                    "remediation": (
+                        "Validate external_data paths before onnx.save(). "
+                        "Update ONNX to a patched version and run model "
+                        "processing with minimal filesystem privileges."
+                    ),
                 },
+                why=(
+                    "The model contains an external_data path that resolves "
+                    "outside the model directory. If this model is saved with "
+                    "external data, ONNX may overwrite arbitrary files "
+                    "(CVE-2025-51480)."
+                ),
             )
 
     def _validate_external_size(
