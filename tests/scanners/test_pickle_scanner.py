@@ -1,6 +1,8 @@
+import os
 import pickle
 import struct
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -979,6 +981,114 @@ class TestPickleScannerBlocklistHardening(unittest.TestCase):
         assert any(i.severity == IssueSeverity.CRITICAL and "webbrowser" in i.message for i in result.issues), (
             f"Expected CRITICAL webbrowser issue, got: {[i.message for i in result.issues]}"
         )
+
+
+class TestCVE20251716PipMainBlocklist(unittest.TestCase):
+    """Test CVE-2025-1716: pickle bypass via pip.main() as callable."""
+
+    def test_pip_main_detected_as_critical(self) -> None:
+        """Pickle with GLOBAL pip.main + REDUCE should be flagged CRITICAL."""
+        # Protocol 2 pickle: GLOBAL pip\nmain\n, EMPTY_TUPLE, REDUCE, STOP
+        payload = b"\x80\x02cpip\nmain\n)R."
+        with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as f:
+            f.write(payload)
+            f.flush()
+            path = f.name
+        try:
+            scanner = PickleScanner()
+            result = scanner.scan(path)
+
+            # Should have CRITICAL issues referencing pip.main
+            critical_issues = [i for i in result.issues if i.severity == IssueSeverity.CRITICAL]
+            assert len(critical_issues) > 0, (
+                f"pip.main should be flagged as CRITICAL. Issues: {[i.message for i in result.issues]}"
+            )
+            assert any("pip" in i.message for i in critical_issues), (
+                f"Should reference pip in message. Issues: {[i.message for i in critical_issues]}"
+            )
+        finally:
+            os.unlink(path)
+
+    def test_pip_internal_main_detected(self) -> None:
+        """Pickle with GLOBAL pip._internal.main should be flagged."""
+        payload = b"\x80\x02cpip._internal\nmain\n)R."
+        with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as f:
+            f.write(payload)
+            f.flush()
+            path = f.name
+        try:
+            scanner = PickleScanner()
+            result = scanner.scan(path)
+
+            critical_issues = [i for i in result.issues if i.severity == IssueSeverity.CRITICAL]
+            assert len(critical_issues) > 0, (
+                f"pip._internal.main should be flagged. Issues: {[i.message for i in result.issues]}"
+            )
+            assert any("pip" in i.message.lower() for i in critical_issues), (
+                f"Should reference pip in message. Issues: {[i.message for i in critical_issues]}"
+            )
+        finally:
+            os.unlink(path)
+
+    def test_comment_token_does_not_bypass_pip_detection(self) -> None:
+        """Embedding a comment-like token in a malicious pip payload must not suppress detection."""
+        # Build a pickle that includes a benign SHORT_BINUNICODE string containing "#"
+        # before the dangerous pip.main GLOBAL+REDUCE sequence.
+        # Protocol 2: PROTO 2, SHORT_BINUNICODE "# comment", POP, GLOBAL pip\nmain\n, EMPTY_TUPLE, REDUCE, STOP
+        comment_token = b"# this is a comment"
+        comment_op = b"\x8c" + bytes([len(comment_token)]) + comment_token  # SHORT_BINUNICODE
+        pop_op = b"0"  # POP to discard the string from the stack
+        payload = b"\x80\x02" + comment_op + pop_op + b"cpip\nmain\n)R."
+        with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as f:
+            f.write(payload)
+            f.flush()
+            path = f.name
+        try:
+            scanner = PickleScanner()
+            result = scanner.scan(path)
+
+            critical_issues = [i for i in result.issues if i.severity == IssueSeverity.CRITICAL]
+            assert len(critical_issues) > 0, (
+                f"Comment token must not suppress pip.main detection. Issues: {[i.message for i in result.issues]}"
+            )
+            assert any("pip" in i.message.lower() for i in critical_issues), (
+                f"Should reference pip in message despite comment token. Issues: {[i.message for i in critical_issues]}"
+            )
+        finally:
+            os.unlink(path)
+
+    def test_pip_main_in_always_dangerous(self) -> None:
+        """Verify pip.main is in ALWAYS_DANGEROUS_FUNCTIONS set."""
+        from modelaudit.scanners.pickle_scanner import ALWAYS_DANGEROUS_FUNCTIONS
+
+        assert "pip.main" in ALWAYS_DANGEROUS_FUNCTIONS
+        assert "pip._internal.main" in ALWAYS_DANGEROUS_FUNCTIONS
+        assert "pip._internal.cli.main.main" in ALWAYS_DANGEROUS_FUNCTIONS
+        assert "pip._vendor.distlib.scripts.ScriptMaker" in ALWAYS_DANGEROUS_FUNCTIONS
+
+    def test_pip_module_in_always_dangerous_modules(self) -> None:
+        """Verify pip module prefixes are in ALWAYS_DANGEROUS_MODULES set."""
+        from modelaudit.scanners.pickle_scanner import ALWAYS_DANGEROUS_MODULES
+
+        assert "pip" in ALWAYS_DANGEROUS_MODULES
+        assert "pip._internal" in ALWAYS_DANGEROUS_MODULES
+        assert "pip._internal.cli" in ALWAYS_DANGEROUS_MODULES
+        assert "pip._internal.cli.main" in ALWAYS_DANGEROUS_MODULES
+        assert "pip._vendor" in ALWAYS_DANGEROUS_MODULES
+        assert "pip._vendor.distlib" in ALWAYS_DANGEROUS_MODULES
+        assert "pip._vendor.distlib.scripts" in ALWAYS_DANGEROUS_MODULES
+
+    def test_prefix_matching_catches_deep_pip_submodules(self) -> None:
+        """Verify _is_dangerous_module catches pip sub-modules not explicitly listed."""
+        from modelaudit.scanners.pickle_scanner import _is_dangerous_module
+
+        # These are not explicitly in the set but should match via prefix
+        assert _is_dangerous_module("pip._internal.cli.main_parser")
+        assert _is_dangerous_module("pip._vendor.distlib.scripts.run")
+        assert _is_dangerous_module("pip._internal.commands.install")
+        # Non-pip modules should not match
+        assert not _is_dangerous_module("pipx.main")
+        assert not _is_dangerous_module("pipeline.process")
 
 
 if __name__ == "__main__":
