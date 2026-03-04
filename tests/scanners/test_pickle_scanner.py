@@ -718,6 +718,96 @@ class TestPickleScannerBlocklistHardening(unittest.TestCase):
         assert os_issues, f"Expected CRITICAL os issue after separator byte, got: {[i.message for i in result.issues]}"
 
     # ------------------------------------------------------------------
+    # Fix 3: EXT opcode registry bypass
+    # ------------------------------------------------------------------
+    def test_ext_reduce_extension_registry_is_flagged(self) -> None:
+        """EXT1/EXT2/EXT4 + REDUCE payloads should be flagged as dangerous."""
+        import copyreg
+        from contextlib import suppress
+
+        inverted_registry = getattr(copyreg, "_inverted_registry", {})
+        extension_registry = getattr(copyreg, "_extension_registry", {})
+        existing_code = extension_registry.get(("os", "system"))
+
+        def _pick_free_code(start: int, end: int) -> int:
+            for candidate in range(start, end + 1):
+                if candidate not in inverted_registry:
+                    return candidate
+            pytest.skip(f"No free copyreg extension code available in range {start}-{end}")
+
+        cases = [
+            ("EXT1", b"\x82", _pick_free_code(1, 255), lambda code: bytes([code])),
+            ("EXT2", b"\x83", _pick_free_code(256, 65535), lambda code: struct.pack("<H", code)),
+            ("EXT4", b"\x84", _pick_free_code(65536, 131072), lambda code: struct.pack("<I", code)),
+        ]
+
+        try:
+            if isinstance(existing_code, int):
+                with suppress(ValueError):
+                    copyreg.remove_extension("os", "system", existing_code)
+
+            for _opcode_name, opcode, ext_code, encode in cases:
+                copyreg.add_extension("os", "system", ext_code)
+                try:
+                    # PROTO 2 | EXT*(code) | MARK | STRING | TUPLE | REDUCE | STOP
+                    payload = b"\x80\x02" + opcode + encode(ext_code) + b'(S"echo pwned"\ntR.'
+                    result = self._scan_bytes(payload)
+
+                    assert result.success
+                    assert result.has_errors
+                    reduce_issues = [i for i in result.issues if "reduce" in i.message.lower()]
+                    assert reduce_issues, f"Expected REDUCE issue, got: {[i.message for i in result.issues]}"
+                    assert any("os.system" in i.message or "posix.system" in i.message for i in reduce_issues), (
+                        f"Expected resolved os/posix.system in REDUCE issues, got: {[i.message for i in reduce_issues]}"
+                    )
+                finally:
+                    with suppress(ValueError):
+                        copyreg.remove_extension("os", "system", ext_code)
+        finally:
+            if isinstance(existing_code, int):
+                with suppress(ValueError):
+                    copyreg.add_extension("os", "system", existing_code)
+
+    def test_ext_unresolved_code_still_flagged(self) -> None:
+        """EXT1/EXT2/EXT4 with codes NOT in copyreg registry should still be flagged."""
+        import copyreg
+
+        inverted_registry = getattr(copyreg, "_inverted_registry", {})
+
+        def _pick_unregistered_code(start: int, end: int) -> int:
+            for candidate in range(start, end + 1):
+                if candidate not in inverted_registry:
+                    return candidate
+            pytest.skip(f"No unregistered copyreg code in range {start}-{end}")
+
+        cases = [
+            ("EXT1", b"\x82", _pick_unregistered_code(1, 255), lambda code: bytes([code])),
+            ("EXT2", b"\x83", _pick_unregistered_code(256, 65535), lambda code: struct.pack("<H", code)),
+            ("EXT4", b"\x84", _pick_unregistered_code(65536, 131072), lambda code: struct.pack("<I", code)),
+        ]
+
+        for opcode_name, opcode, ext_code, encode in cases:
+            # Verify the code is truly unregistered
+            assert ext_code not in inverted_registry, (
+                f"{opcode_name} code {ext_code} unexpectedly in copyreg._inverted_registry"
+            )
+            # PROTO 2 | EXT*(code) | MARK | STRING | TUPLE | REDUCE | STOP
+            payload = b"\x80\x02" + opcode + encode(ext_code) + b'(S"echo pwned"\ntR.'
+            result = self._scan_bytes(payload)
+
+            assert result.success, f"{opcode_name}: scan did not succeed"
+            assert result.has_errors, (
+                f"{opcode_name}: unresolved EXT code {ext_code} + REDUCE was not flagged, "
+                f"issues: {[i.message for i in result.issues]}"
+            )
+            # The scanner should flag the REDUCE even when the EXT target is unresolved
+            critical_issues = [i for i in result.issues if i.severity == IssueSeverity.CRITICAL]
+            assert critical_issues, (
+                f"{opcode_name}: expected CRITICAL issue for unresolved EXT code {ext_code}, "
+                f"got: {[i.message for i in result.issues]}"
+            )
+
+    # ------------------------------------------------------------------
     # Fix 4: NEWOBJ_EX with dangerous class
     # ------------------------------------------------------------------
     def test_newobj_ex_dangerous_class(self) -> None:
