@@ -18,6 +18,7 @@ from modelaudit.utils.helpers.code_validation import (
 
 from ..config.explanations import (
     get_cve_2025_1550_explanation,
+    get_cve_2025_8747_explanation,
     get_cve_2025_9906_explanation,
     get_cve_2025_49655_explanation,
     get_pattern_explanation,
@@ -65,6 +66,10 @@ _DANGEROUS_CONFIG_MODULES = frozenset(
         "distutils",
     }
 )
+
+# CVE-2025-8747: keras.utils.get_file used as gadget to download + execute files
+_GET_FILE_PATTERN = re.compile(r"get_file", re.IGNORECASE)
+_URL_PATTERN = re.compile(r"https?://", re.IGNORECASE)
 
 
 class KerasZipScanner(BaseScanner):
@@ -166,6 +171,8 @@ class KerasZipScanner(BaseScanner):
                         result.finish(success=False)
                         return result
 
+                # CVE-2025-8747: Check for structured get_file gadget usage
+                self._check_get_file_gadget(model_config, result)
                 # CVE-2025-9906: structured fallback check on parsed config
                 self._check_unsafe_deserialization_bypass(model_config, result)
 
@@ -516,6 +523,53 @@ class KerasZipScanner(BaseScanner):
                     why=get_cve_2025_1550_explanation("untrusted_module"),
                 )
 
+    def _check_get_file_gadget(self, model_config: dict[str, Any], result: ScanResult) -> None:
+        """Check for CVE-2025-8747: keras.utils.get_file gadget bypass.
+
+        CVE-2025-8747: Bypass of CVE-2025-1550 fix. Uses keras.utils.get_file
+        as a gadget to download and execute arbitrary files even with safe_mode=True.
+        Detected when a single config object references get_file and includes URL arguments.
+        """
+        for context, node in self._iter_dict_nodes(model_config):
+            if self._is_primarily_documentation(context, node):
+                continue
+            string_values: list[str] = []
+            for value in node.values():
+                string_values.extend(self._extract_string_literals(value))
+            has_get_file = any(
+                _GET_FILE_PATTERN.fullmatch(value.strip()) is not None
+                or value.strip().lower().endswith(".get_file")
+                or "keras.utils.get_file" in value.strip().lower()
+                for value in string_values
+            )
+            has_url = any(_URL_PATTERN.search(value) is not None for value in string_values)
+            if not (has_get_file and has_url):
+                continue
+            result.add_check(
+                name="CVE-2025-8747: get_file Gadget Bypass",
+                passed=False,
+                message=(
+                    "CVE-2025-8747: config.json contains structured 'get_file' invocation with URL - "
+                    "potential safe_mode bypass via file download gadget"
+                ),
+                severity=IssueSeverity.CRITICAL,
+                location=f"{self.current_file_path}/config.json",
+                details={
+                    "cve_id": "CVE-2025-8747",
+                    "context": context,
+                    "cvss": 8.8,
+                    "cwe": "CWE-502",
+                    "description": (
+                        "Keras config references get_file with a remote URL in executable context, "
+                        "which can bypass safe_mode protections and load attacker-controlled payloads."
+                    ),
+                    "affected_versions": "Keras 3.0.0-3.10.0",
+                    "remediation": "Upgrade Keras to >= 3.11.0",
+                },
+                why=get_cve_2025_8747_explanation("get_file_gadget"),
+            )
+            return
+
     def _check_unsafe_deserialization_bypass(self, model_config: dict[str, Any], result: ScanResult) -> None:
         """Check for CVE-2025-9906: enable_unsafe_deserialization bypass in config.json.
 
@@ -565,7 +619,7 @@ class KerasZipScanner(BaseScanner):
         matched_symbol = next((symbol for symbol in raw_symbols if symbol in lowered), None)
         if not matched_symbol:
             return
-        if self._is_primarily_documentation(raw_config_text):
+        if self._is_primarily_documentation_text(raw_config_text):
             return
 
         result.add_check(
@@ -597,7 +651,7 @@ class KerasZipScanner(BaseScanner):
         """Recursively detect object-scoped unsafe-deserialization references."""
         if isinstance(obj, str):
             token = obj.strip()
-            if self._is_primarily_documentation(token):
+            if self._is_primarily_documentation_text(token):
                 return False
             lowered = token.lower()
             return lowered in {
@@ -609,7 +663,7 @@ class KerasZipScanner(BaseScanner):
             string_values = [
                 value.strip().lower()
                 for value in obj.values()
-                if isinstance(value, str) and not self._is_primarily_documentation(value)
+                if isinstance(value, str) and not self._is_primarily_documentation_text(value)
             ]
             has_enable_unsafe = any(
                 token == "enable_unsafe_deserialization" or token.endswith(".enable_unsafe_deserialization")
@@ -638,7 +692,7 @@ class KerasZipScanner(BaseScanner):
     def _subtree_has_enable_unsafe(self, obj: Any) -> bool:
         """Return True if subtree contains an enable_unsafe_deserialization token."""
         if isinstance(obj, str):
-            if self._is_primarily_documentation(obj):
+            if self._is_primarily_documentation_text(obj):
                 return False
             token = obj.strip().lower()
             return token == "enable_unsafe_deserialization" or token.endswith(".enable_unsafe_deserialization")
@@ -657,7 +711,32 @@ class KerasZipScanner(BaseScanner):
         return any(issue.details.get("cve_id") == "CVE-2025-9906" for issue in result.issues)
 
     @staticmethod
-    def _is_primarily_documentation(text: str) -> bool:
+    def _extract_string_literals(value: Any) -> list[str]:
+        """Extract string literals from simple container values."""
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (list, tuple, set)):
+            values: list[str] = []
+            for item in value:
+                values.extend(KerasZipScanner._extract_string_literals(item))
+            return values
+        return []
+
+    @staticmethod
+    def _is_primarily_documentation(context: str, node: dict[str, Any]) -> bool:
+        """Heuristically detect documentation-only nodes to reduce false positives."""
+        context_lower = context.lower()
+        doc_markers = (".description", ".doc", ".docs", ".comment", ".comments", ".notes", ".help", ".readme")
+        if any(marker in context_lower for marker in doc_markers):
+            return True
+
+        lowered_keys = {str(key).lower() for key in node}
+        doc_keys = {"description", "doc", "docs", "comment", "comments", "notes", "help", "readme", "citation"}
+        execution_keys = {"fn", "function", "module", "url", "args", "kwargs", "class_name", "callable"}
+        return bool(lowered_keys) and lowered_keys.issubset(doc_keys) and lowered_keys.isdisjoint(execution_keys)
+
+    @staticmethod
+    def _is_primarily_documentation_text(text: str) -> bool:
         """Return True when content is mostly documentation-style text."""
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         if not lines:
@@ -676,6 +755,20 @@ class KerasZipScanner(BaseScanner):
                 doc_like_lines += 1
 
         return (doc_like_lines / len(lines)) > 0.5
+
+    def _iter_dict_nodes(self, obj: Any, path: str = "root") -> list[tuple[str, dict[str, Any]]]:
+        """Yield all dict nodes with their traversal path."""
+        nodes: list[tuple[str, dict[str, Any]]] = []
+        if isinstance(obj, dict):
+            nodes = [(path, obj)]
+            for key, value in obj.items():
+                nodes.extend(self._iter_dict_nodes(value, f"{path}.{key}"))
+            return nodes
+        if isinstance(obj, list):
+            for idx, value in enumerate(obj):
+                nodes.extend(self._iter_dict_nodes(value, f"{path}[{idx}]"))
+            return nodes
+        return []
 
     def _check_lambda_layer(self, layer: dict[str, Any], result: ScanResult, layer_name: str) -> None:
         """Check Lambda layer for executable Python code"""
