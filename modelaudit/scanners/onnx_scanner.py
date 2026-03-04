@@ -622,3 +622,57 @@ class OnnxScanner(BaseScanner):
                 location=path,
                 details={"exception": str(e), "exception_type": type(e).__name__},
             )
+
+    def extract_metadata(self, file_path: str) -> dict[str, Any]:
+        """Extract ONNX model metadata."""
+        metadata = super().extract_metadata(file_path)
+
+        if not _check_onnx():
+            metadata["extraction_error"] = "ONNX library not available"
+            return metadata
+
+        try:
+            import onnx
+
+            model = onnx.load(file_path, load_external_data=False)
+
+            # Basic model info
+            metadata.update(
+                {
+                    "ir_version": model.ir_version,
+                    "producer_name": model.producer_name,
+                    "producer_version": model.producer_version,
+                    "model_version": model.model_version,
+                    "domain": model.domain,
+                    "node_count": len(model.graph.node),
+                }
+            )
+
+            # Opsets
+            metadata["opset_imports"] = [
+                {"domain": op.domain or "ai.onnx", "version": op.version} for op in model.opset_import
+            ]
+
+            # Inputs/outputs
+            metadata["inputs"] = [
+                {"name": inp.name, "type": onnx.helper.printable_type(inp.type)} for inp in model.graph.input
+            ]
+            metadata["outputs"] = [
+                {"name": out.name, "type": onnx.helper.printable_type(out.type)} for out in model.graph.output
+            ]
+
+            # Operators used
+            operators = sorted({node.op_type for node in model.graph.node})
+            metadata["operators"] = operators
+
+            # Custom domains
+            custom_domains = sorted(
+                {node.domain for node in model.graph.node if node.domain and node.domain not in {"", "ai.onnx"}}
+            )
+            if custom_domains:
+                metadata["custom_domains"] = custom_domains
+
+        except Exception as e:
+            metadata["extraction_error"] = str(e)
+
+        return metadata
