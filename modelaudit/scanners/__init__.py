@@ -148,6 +148,15 @@ class ScannerRegistry:
                 "dependencies": ["onnx"],  # Heavy dependency
                 "numpy_sensitive": True,  # ONNX can be sensitive to NumPy version
             },
+            "coreml": {
+                "module": "modelaudit.scanners.coreml_scanner",
+                "class": "CoreMLScanner",
+                "description": "Scans CoreML .mlmodel files",
+                "extensions": [".mlmodel"],
+                "priority": 7,  # Above generic metadata/manifest/text scanners
+                "dependencies": [],
+                "numpy_sensitive": False,
+            },
             "openvino": {
                 "module": "modelaudit.scanners.openvino_scanner",
                 "class": "OpenVinoScanner",
@@ -443,6 +452,15 @@ class ScannerRegistry:
                 "priority": 7,  # After GGUF scanner, before joblib
                 "dependencies": ["xgboost", "ubjson"],  # ubjson optional for UBJ support
                 "numpy_sensitive": True,  # XGBoost can be sensitive to NumPy version
+            },
+            "mxnet": {
+                "module": "modelaudit.scanners.mxnet_scanner",
+                "class": "MXNetScanner",
+                "description": "Scans MXNet symbol/params model artifacts",
+                "extensions": [".json", ".params"],
+                "priority": 8,  # Before generic manifest/json scanners
+                "dependencies": [],
+                "numpy_sensitive": False,
             },
             "catboost": {
                 "module": "modelaudit.scanners.catboost_scanner",
@@ -743,6 +761,7 @@ def __getattr__(name: str) -> Any:
         "TensorFlowSavedModelScanner": "tf_savedmodel",
         "KerasH5Scanner": "keras_h5",
         "OnnxScanner": "onnx",
+        "CoreMLScanner": "coreml",
         "OpenVinoScanner": "openvino",
         "PyTorchZipScanner": "pytorch_zip",
         "ExecuTorchScanner": "executorch",
@@ -773,6 +792,7 @@ def __getattr__(name: str) -> Any:
         "LightGBMScanner": "lightgbm",
         "LlamafileScanner": "llamafile",
         "XGBoostScanner": "xgboost",
+        "MXNetScanner": "mxnet",
         "CatBoostScanner": "catboost",
         "NemoScanner": "nemo",
         "CompressedScanner": "compressed",

@@ -2,6 +2,7 @@ import bz2
 import gzip
 import io
 import lzma
+import struct
 import tarfile
 import zipfile
 import zlib
@@ -69,10 +70,12 @@ def test_detect_file_format_by_extension(tmp_path):
         ".dnn": "unknown",
         ".cmf": "unknown",
         ".msgpack": "flax_msgpack",
+        ".params": "mxnet",
         ".h5": "hdf5",
         ".pb": "protobuf",
         ".tflite": "tflite",
         ".cbm": "catboost",
+        ".mlmodel": "coreml",
         ".llamafile": "llamafile",
         ".rknn": "rknn",
         ".rds": "r_serialized",
@@ -95,6 +98,24 @@ def test_detect_file_format_hdf5(tmp_path):
     hdf5_path.write_bytes(hdf5_magic + b"additional content")
 
     assert detect_file_format(str(hdf5_path)) == "hdf5"
+
+
+def test_detect_file_format_coreml_validation_passthrough(tmp_path):
+    """CoreML extension routing should remain scanner-level validated."""
+    model_path = tmp_path / "model.mlmodel"
+    model_path.write_bytes(b"not-a-real-protobuf")
+
+    assert detect_file_format(str(model_path)) == "coreml"
+    assert detect_format_from_extension(str(model_path)) == "coreml"
+    assert validate_file_type(str(model_path)) is True
+
+
+def test_detect_format_from_extension_mxnet_symbol(tmp_path):
+    """MXNet symbol files should be detected by filename pattern."""
+    symbol_path = tmp_path / "resnet-symbol.json"
+    symbol_path.write_text('{"nodes":[{"op":"null","name":"data","inputs":[]}],"arg_nodes":[0],"heads":[[0,0,0]]}')
+
+    assert detect_format_from_extension(str(symbol_path)) == "mxnet"
 
 
 def test_detect_r_serialized_magic_headers(tmp_path: Path) -> None:
@@ -448,6 +469,16 @@ def test_validate_file_type(tmp_path):
     llamafile_path = tmp_path / "model.llamafile"
     llamafile_path.write_bytes(b"\x7fELF" + b"\x00" * 32 + b"llamafile")
     assert validate_file_type(str(llamafile_path)) is True
+
+    # MXNet params files do not expose stable magic bytes and validate by extension.
+    mxnet_params = tmp_path / "model-0000.params"
+    mxnet_params.write_bytes(struct.pack("<4f", 0.1, 0.2, 0.3, 0.4))
+    assert validate_file_type(str(mxnet_params)) is True
+
+    # MXNet symbol JSON files follow a filename contract, not magic-byte signatures.
+    mxnet_symbol = tmp_path / "model-symbol.json"
+    mxnet_symbol.write_text('{"nodes":[{"op":"null","name":"data","inputs":[]}],"arg_nodes":[0],"heads":[[0,0,0]]}')
+    assert validate_file_type(str(mxnet_symbol)) is True
 
 
 def test_detect_file_format_from_magic_oserror(tmp_path, monkeypatch):

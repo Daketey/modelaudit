@@ -488,6 +488,10 @@ def detect_file_format(path: str) -> str:
         if magic4 == b"RKNN":
             return "rknn"
         return "rknn"
+    if ext == ".json" and file_path.name.lower().endswith("-symbol.json"):
+        return "mxnet"
+    if ext == ".params":
+        return "mxnet"
     if ext == ".cbm":
         return "catboost"
     if ext == ".llamafile":
@@ -498,6 +502,8 @@ def detect_file_format(path: str) -> str:
         return "protobuf"
     if ext == ".tflite":
         return "tflite"
+    if ext == ".mlmodel":
+        return "coreml"
     if ext == ".safetensors":
         return "safetensors"
     if ext in (".pdmodel", ".pdiparams"):
@@ -573,6 +579,7 @@ EXTENSION_FORMAT_MAP = {
     ".hdf5": "hdf5",
     ".keras": "keras",  # Keras 3.x uses ZIP, legacy Keras uses HDF5
     ".pb": "protobuf",
+    ".mlmodel": "coreml",
     ".safetensors": "safetensors",
     ".onnx": "onnx",
     ".bin": "pytorch_binary",
@@ -602,6 +609,7 @@ EXTENSION_FORMAT_MAP = {
     ".joblib": "pickle",  # joblib can be either zip or pickle format
     ".pdmodel": "paddle",
     ".pdiparams": "paddle",
+    ".params": "mxnet",
     ".engine": "tensorrt",
     ".plan": "tensorrt",
     ".msgpack": "flax_msgpack",
@@ -662,10 +670,14 @@ def detect_format_from_extension_pattern_matching(extension: FileExtension) -> F
             return "protobuf"
         case ".tflite":
             return "tflite"
+        case ".mlmodel":
+            return "coreml"
         case ".engine":
             return "tensorrt"
         case ".pdmodel" | ".pdiparams":
             return "paddle"
+        case ".params":
+            return "mxnet"
         case ".xml":
             return "openvino"
         case ".pmml":
@@ -701,6 +713,8 @@ def detect_format_from_extension(path: FilePath) -> FileFormat:
     filename_lower = file_path.name.lower()
     if filename_lower.endswith((".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")):
         return "tar"
+    if file_path.suffix.lower() == ".json" and filename_lower.endswith("-symbol.json"):
+        return "mxnet"
 
     # Use pattern matching for modern Python 3.10+ approach
     return detect_format_from_extension_pattern_matching(file_path.suffix)
@@ -853,6 +867,16 @@ def validate_file_type(path: str) -> bool:
         # Llamafiles are executable wrappers; scanner-level checks validate markers.
         if ext_format == "llamafile":
             return True
+
+        # MXNet params and symbol JSON artifacts rely on strict scanner-level
+        # structural checks rather than magic-byte signatures.
+        if ext_format == "mxnet":
+            return True
+
+        # CoreML .mlmodel files are protobuf-encoded with no stable magic bytes.
+        # Structural validation is performed by the dedicated scanner.
+        if ext_format == "coreml":
+            return header_format in {"coreml", "unknown"}
 
         # R serialized workspace/data files may be uncompressed or wrapped;
         # extension-based intent is authoritative for static scanning.
