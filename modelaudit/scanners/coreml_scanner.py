@@ -269,6 +269,12 @@ class CoreMLScanner(BaseScanner):
 
     SAFE_LINKED_PATH_PREFIXES: ClassVar[tuple[str, ...]] = ("$BUNDLE_MAIN", "$BUNDLE_IDENTIFIER(")
 
+    # Built-in metadata fields that commonly contain benign URLs (author homepage,
+    # license link, etc.) should not trigger network-pattern warnings.
+    BUILTIN_NETWORK_SAFE_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"author", "license", "shortdescription", "versionstring"}
+    )
+
     @classmethod
     def can_handle(cls, path: str) -> bool:
         if not os.path.isfile(path):
@@ -596,6 +602,17 @@ class CoreMLScanner(BaseScanner):
 
         has_command_pattern = bool(_COMMAND_PATTERN.search(value_for_scan))
         has_network_pattern = bool(_NETWORK_PATTERN.search(value_for_scan))
+
+        # Built-in metadata fields (author, license, etc.) commonly contain benign
+        # URLs.  Only flag them when a command pattern is present.
+        if (
+            not user_defined
+            and key_lower in self.BUILTIN_NETWORK_SAFE_FIELDS
+            and has_network_pattern
+            and not has_command_pattern
+        ):
+            has_network_pattern = False
+
         if has_command_pattern or has_network_pattern:
             severity = IssueSeverity.CRITICAL if (has_command_pattern and executable_context) else IssueSeverity.WARNING
             pattern_type = "command" if has_command_pattern else "network"
