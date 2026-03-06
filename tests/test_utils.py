@@ -19,7 +19,7 @@ def test_is_within_directory_outside(tmp_path: Path) -> None:
     assert is_within_directory(str(base_dir), str(outside)) is False
 
 
-def test_is_within_directory_symlink_inside_to_outside(tmp_path: Path, requires_symlinks) -> None:
+def test_is_within_directory_symlink_inside_to_outside(tmp_path: Path, requires_symlinks: None) -> None:
     base_dir = tmp_path / "base"
     base_dir.mkdir()
     outside_dir = tmp_path / "outside"
@@ -31,7 +31,7 @@ def test_is_within_directory_symlink_inside_to_outside(tmp_path: Path, requires_
     assert is_within_directory(str(base_dir), str(link)) is False
 
 
-def test_is_within_directory_symlink_outside_to_inside(tmp_path: Path, requires_symlinks) -> None:
+def test_is_within_directory_symlink_outside_to_inside(tmp_path: Path, requires_symlinks: None) -> None:
     base_dir = tmp_path / "base"
     base_dir.mkdir()
     inside_file = base_dir / "inside.txt"
@@ -41,7 +41,7 @@ def test_is_within_directory_symlink_outside_to_inside(tmp_path: Path, requires_
     assert is_within_directory(str(base_dir), str(link)) is True
 
 
-def test_sanitize_archive_path_does_not_follow_symlinked_base(tmp_path: Path, requires_symlinks) -> None:
+def test_sanitize_archive_path_does_not_follow_symlinked_base(tmp_path: Path, requires_symlinks: None) -> None:
     base_target = tmp_path / "real_extract_root"
     base_target.mkdir()
     symlinked_base = tmp_path / "extract"
@@ -53,7 +53,7 @@ def test_sanitize_archive_path_does_not_follow_symlinked_base(tmp_path: Path, re
     assert Path(resolved_path) == tmp_path / "escape.txt"
 
 
-def test_sanitize_archive_path_keeps_safe_paths_under_symlinked_base(tmp_path: Path, requires_symlinks) -> None:
+def test_sanitize_archive_path_keeps_safe_paths_under_symlinked_base(tmp_path: Path, requires_symlinks: None) -> None:
     base_target = tmp_path / "real_extract_root"
     base_target.mkdir()
     symlinked_base = tmp_path / "extract"
