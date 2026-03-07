@@ -3,6 +3,8 @@ import tarfile
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from modelaudit.scanners.base import IssueSeverity
 from modelaudit.scanners.tar_scanner import TarScanner
 
@@ -292,7 +294,9 @@ class TestTarScanner:
         finally:
             os.unlink(tmp_path)
 
-    def test_extract_member_to_tempfile_streams_in_chunks(self, tmp_path, monkeypatch):
+    def test_extract_member_to_tempfile_streams_in_chunks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Large TAR entries should be copied in bounded chunks instead of buffered in memory."""
         content = b"A" * 10_000
         archive_path = tmp_path / "payload.tar"
@@ -326,9 +330,9 @@ class TestTarScanner:
         finally:
             os.unlink(extracted_path)
 
-    def test_scan_rejects_oversized_tar_member(self, tmp_path):
+    def test_scan_rejects_oversized_tar_member(self, tmp_path: Path) -> None:
         """Entries exceeding the configured limit should fail the scan before full extraction."""
-        scanner = TarScanner(config={"max_file_size": 64})
+        scanner = TarScanner(config={"max_entry_size": 64})
         archive_path = tmp_path / "oversized.tar"
         payload = b"B" * 128
 
@@ -340,4 +344,6 @@ class TestTarScanner:
         result = scanner.scan(str(archive_path))
 
         assert result.success is False
-        assert any("exceeds maximum size" in issue.message.lower() for issue in result.issues)
+        oversize_checks = [check for check in result.checks if check.name == "TAR File Scan"]
+        assert len(oversize_checks) == 1
+        assert "tar entry payload.bin exceeds maximum size of 64 bytes" in oversize_checks[0].message.lower()

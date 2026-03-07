@@ -126,6 +126,8 @@ class TarScanner(BaseScanner):
     ) -> tuple[str, int]:
         """Stream a TAR member to disk while enforcing the configured size limit."""
         max_entry_size = self._get_max_entry_size()
+        if member.size > max_entry_size:
+            raise ValueError(f"TAR entry {member.name} exceeds maximum size of {max_entry_size} bytes")
         fileobj = tar.extractfile(member)
         if fileobj is None:
             raise ValueError(f"Unable to extract TAR entry: {member.name}")
