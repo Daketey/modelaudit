@@ -1,4 +1,5 @@
 import json
+import shutil
 import tarfile
 from pathlib import Path
 from unittest.mock import patch
@@ -282,10 +283,17 @@ class TestOciLayerScanner:
         manifest_path.write_text(json.dumps(manifest))
 
         mocked_result = ScanResult(scanner_name="onnx")
-        with patch("modelaudit.core.scan_file", return_value=mocked_result) as mock_scan:
+        with (
+            patch("modelaudit.core.scan_file", return_value=mocked_result) as mock_scan,
+            patch(
+                "modelaudit.scanners.oci_layer_scanner.shutil.copyfileobj",
+                wraps=shutil.copyfileobj,
+            ) as mock_copy,
+        ):
             result = OciLayerScanner().scan(str(manifest_path))
 
         assert result.success is True
+        mock_copy.assert_called_once()
         mock_scan.assert_called_once()
         scanned_path = mock_scan.call_args.args[0]
         assert scanned_path != "models/model.onnx"

@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import tarfile
 import tempfile
 from pathlib import Path
@@ -149,7 +150,7 @@ class OciLayerScanner(BaseScanner):
                                 suffix=matched_ext,
                                 delete=False,
                             ) as tmp:
-                                tmp.write(fileobj.read())
+                                shutil.copyfileobj(fileobj, tmp)
                                 tmp_path = tmp.name
                         finally:
                             fileobj.close()
