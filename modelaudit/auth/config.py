@@ -126,16 +126,33 @@ def _tighten_permissions(path: Path, mode: int) -> None:
         path.chmod(mode)
 
 
+def _has_symlink_component(path: Path) -> bool:
+    """Return True when path or any ancestor is a symlink."""
+    current = path
+    while True:
+        try:
+            if current.is_symlink():
+                return True
+        except OSError:
+            return True
+        if current == current.parent:
+            return False
+        current = current.parent
+
+
 def _is_secure_directory(path: Path) -> bool:
     """Return True when the path is a usable non-symlink directory."""
     try:
-        return path.exists() and path.is_dir() and not path.is_symlink()
+        return path.exists() and path.is_dir() and not _has_symlink_component(path)
     except OSError:
         return False
 
 
 def _ensure_secure_directory(path: Path) -> bool:
     """Create a directory when possible and reject symlinked targets."""
+    if _has_symlink_component(path):
+        return False
+
     try:
         path.mkdir(parents=True, mode=0o700, exist_ok=True)
     except OSError:
@@ -162,7 +179,7 @@ def _select_config_directory(create_if_not_exists: bool = False) -> Path:
 
     for candidate in candidates:
         try:
-            if not candidate.is_symlink():
+            if not _has_symlink_component(candidate):
                 return candidate
         except OSError:
             continue
@@ -223,7 +240,12 @@ def read_global_config() -> GlobalConfig:
     global_config_data = {"id": str(uuid4())}
     config_file_path = _get_config_file_path()
 
-    if config_file_path.exists():
+    try:
+        parent_path_is_safe = not _has_symlink_component(config_file_path.parent)
+    except OSError:
+        parent_path_is_safe = False
+
+    if parent_path_is_safe and config_file_path.exists():
         try:
             if config_file_path.is_symlink():
                 raise OSError("Refusing to read symlinked config file")

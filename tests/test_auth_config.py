@@ -121,6 +121,53 @@ def test_read_global_config_does_not_read_attacker_file_when_safe_fallback_is_mi
     assert (fallback_dir / "promptfoo.yaml").exists()
 
 
+def test_read_global_config_ignores_config_directory_under_symlinked_ancestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    requires_symlinks: None,
+) -> None:
+    attacker_root = tmp_path / "attacker-root"
+    attacker_root.mkdir()
+    redirected_root = tmp_path / "redirected-root"
+    redirected_root.symlink_to(attacker_root, target_is_directory=True)
+    primary_dir = redirected_root / "promptfoo"
+    primary_dir.mkdir()
+    (primary_dir / "promptfoo.yaml").write_text(
+        yaml.safe_dump({"id": "attacker-id", "cloud": {"apiKey": "stolen-secret"}})
+    )
+
+    fallback_dir = tmp_path / "home" / ".promptfoo"
+    fallback_dir.mkdir(parents=True)
+    (fallback_dir / "promptfoo.yaml").write_text(yaml.safe_dump({"id": "safe-id", "cloud": {"apiKey": "safe-key"}}))
+
+    _patch_config_paths(auth_config, monkeypatch, primary_dir, fallback_dir)
+
+    config = auth_config.read_global_config()
+
+    assert config.id == "safe-id"
+    assert config.cloud["apiKey"] == "safe-key"
+
+
+def test_write_global_config_avoids_directory_under_symlinked_ancestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    requires_symlinks: None,
+) -> None:
+    attacker_root = tmp_path / "attacker-root"
+    attacker_root.mkdir()
+    redirected_root = tmp_path / "redirected-root"
+    redirected_root.symlink_to(attacker_root, target_is_directory=True)
+    primary_dir = redirected_root / "promptfoo"
+    fallback_dir = tmp_path / "home" / ".promptfoo"
+
+    _patch_config_paths(auth_config, monkeypatch, primary_dir, fallback_dir)
+
+    auth_config.write_global_config(auth_config.GlobalConfig({"id": "safe-id", "cloud": {"apiKey": "safe-key"}}))
+
+    assert not (attacker_root / "promptfoo" / "promptfoo.yaml").exists()
+    assert (fallback_dir / "promptfoo.yaml").exists()
+
+
 def test_write_global_config_uses_private_file_permissions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
