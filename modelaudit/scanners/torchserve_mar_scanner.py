@@ -459,10 +459,14 @@ class TorchServeMarScanner(BaseScanner):
         if not reference_base:
             return []
 
-        if self._is_path_like_reference("handler", reference_base):
-            return [self._normalize_member_name(reference_base)]
+        normalized_member = self._normalize_member_name(reference_base)
+        if PurePosixPath(normalized_member).suffix:
+            return [normalized_member]
 
-        module_path = reference_base.replace(".", "/")
+        module_path = normalized_member.replace(".", "/").rstrip("/")
+        if not module_path:
+            return []
+
         return [
             self._normalize_member_name(f"{module_path}.py"),
             self._normalize_member_name(f"{module_path}/__init__.py"),
