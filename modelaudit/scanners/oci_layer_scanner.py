@@ -145,15 +145,18 @@ class OciLayerScanner(BaseScanner):
                         fileobj = tar.extractfile(member)
                         if fileobj is None:
                             continue
+                        tmp_path: str | None = None
                         try:
                             with tempfile.NamedTemporaryFile(
                                 suffix=matched_ext,
                                 delete=False,
                             ) as tmp:
-                                shutil.copyfileobj(fileobj, tmp)
                                 tmp_path = tmp.name
+                                shutil.copyfileobj(fileobj, tmp)
                         finally:
                             fileobj.close()
+                        if tmp_path is None:
+                            continue
                         try:
                             from .. import core
 
@@ -168,7 +171,8 @@ class OciLayerScanner(BaseScanner):
                                 issue.details["layer"] = layer_ref
                             result.merge(file_result)
                         finally:
-                            os.unlink(tmp_path)
+                            if os.path.exists(tmp_path):
+                                os.unlink(tmp_path)
             except Exception as e:
                 result.add_check(
                     name="Layer Processing",
