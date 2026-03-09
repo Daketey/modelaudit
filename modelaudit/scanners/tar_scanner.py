@@ -27,6 +27,8 @@ CRITICAL_SYSTEM_PATHS = [
     "C:\\Windows",
 ]
 
+DEFAULT_MAX_TAR_ENTRY_SIZE = 1024 * 1024 * 1024
+
 
 class TarScanner(BaseScanner):
     """Scanner for TAR archive files."""
@@ -112,7 +114,11 @@ class TarScanner(BaseScanner):
 
     def _get_max_entry_size(self) -> int:
         """Return the per-entry extraction limit used for TAR members."""
-        max_entry_size = self.config.get("max_file_size", self.config.get("max_entry_size", 10 * 1024 * 1024 * 1024))
+        configured_entry_limit = self.config.get("max_entry_size")
+        if configured_entry_limit is not None:
+            max_entry_size = configured_entry_limit
+        else:
+            max_entry_size = self.config.get("max_file_size", DEFAULT_MAX_TAR_ENTRY_SIZE)
         if max_entry_size == 0:
             return 1024 * 1024 * 1024 * 1024
         return int(max_entry_size)

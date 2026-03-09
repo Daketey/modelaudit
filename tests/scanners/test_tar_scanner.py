@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from modelaudit.scanners.base import IssueSeverity
-from modelaudit.scanners.tar_scanner import TarScanner
+from modelaudit.scanners.tar_scanner import DEFAULT_MAX_TAR_ENTRY_SIZE, TarScanner
 
 
 class TestTarScanner:
@@ -294,6 +294,15 @@ class TestTarScanner:
         finally:
             os.unlink(tmp_path)
 
+    def test_get_max_entry_size_uses_bounded_default(self) -> None:
+        """Unconfigured TAR entry extraction should still have a bounded default."""
+        assert TarScanner()._get_max_entry_size() == DEFAULT_MAX_TAR_ENTRY_SIZE
+
+    def test_get_max_entry_size_prefers_explicit_entry_limit(self) -> None:
+        """The dedicated per-entry limit should override the top-level file-size setting."""
+        scanner = TarScanner(config={"max_file_size": 4096, "max_entry_size": 128})
+        assert scanner._get_max_entry_size() == 128
+
     def test_extract_member_to_tempfile_streams_in_chunks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -308,7 +317,7 @@ class TestTarScanner:
         read_sizes: list[int | None] = []
         original_read = tarfile.ExFileObject.read
 
-        def tracked_read(self, size=None):
+        def tracked_read(self: tarfile.ExFileObject, size: int | None = None) -> bytes:
             read_sizes.append(size)
             return original_read(self, size)
 
