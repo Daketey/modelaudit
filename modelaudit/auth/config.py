@@ -160,7 +160,14 @@ def _select_config_directory(create_if_not_exists: bool = False) -> Path:
         if _is_secure_directory(candidate):
             return candidate
 
-    return candidates[0]
+    for candidate in candidates:
+        try:
+            if not candidate.is_symlink():
+                return candidate
+        except OSError:
+            continue
+
+    return _home_fallback_config_dir()
 
 
 def _get_config_file_path(create_if_not_exists: bool = False) -> Path:

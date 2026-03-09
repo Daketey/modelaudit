@@ -95,6 +95,32 @@ def test_read_global_config_ignores_symlinked_config_directory(
     assert config.cloud["apiKey"] == "safe-key"
 
 
+def test_read_global_config_does_not_read_attacker_file_when_safe_fallback_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    requires_symlinks: None,
+) -> None:
+    primary_parent = tmp_path / "xdg"
+    primary_parent.mkdir()
+    attacker_dir = tmp_path / "attacker"
+    attacker_dir.mkdir()
+    primary_dir = primary_parent / "promptfoo"
+    primary_dir.symlink_to(attacker_dir, target_is_directory=True)
+    (attacker_dir / "promptfoo.yaml").write_text(
+        yaml.safe_dump({"id": "attacker-id", "cloud": {"apiKey": "stolen-secret"}})
+    )
+
+    fallback_dir = tmp_path / "home" / ".promptfoo"
+
+    _patch_config_paths(auth_config, monkeypatch, primary_dir, fallback_dir)
+
+    config = auth_config.read_global_config()
+
+    assert config.id != "attacker-id"
+    assert config.cloud.get("apiKey") != "stolen-secret"
+    assert (fallback_dir / "promptfoo.yaml").exists()
+
+
 def test_write_global_config_uses_private_file_permissions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
