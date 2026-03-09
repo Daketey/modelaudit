@@ -28,13 +28,17 @@ class OciLayerScanner(BaseScanner):
     supported_extensions: ClassVar[list[str]] = [".manifest"]
 
     @staticmethod
-    def _has_scannable_extension(member_name: str) -> bool:
+    def _get_scannable_extension(member_name: str) -> str | None:
         suffixes = [suffix.lower() for suffix in Path(member_name).suffixes]
         if not suffixes:
-            return False
+            return None
 
         scannable_extensions = get_model_extensions()
-        return any("".join(suffixes[-index:]) in scannable_extensions for index in range(1, len(suffixes) + 1))
+        for index in range(len(suffixes), 0, -1):
+            candidate = "".join(suffixes[-index:])
+            if candidate in scannable_extensions:
+                return candidate
+        return None
 
     @classmethod
     def can_handle(cls, path: str) -> bool:
@@ -134,19 +138,21 @@ class OciLayerScanner(BaseScanner):
                         if not member.isfile():
                             continue
                         name = member.name
-                        _, ext = os.path.splitext(name)
-                        if not self._has_scannable_extension(name):
+                        matched_ext = self._get_scannable_extension(name)
+                        if matched_ext is None:
                             continue
                         fileobj = tar.extractfile(member)
                         if fileobj is None:
                             continue
-                        with tempfile.NamedTemporaryFile(
-                            suffix=ext,
-                            delete=False,
-                        ) as tmp:
-                            tmp.write(fileobj.read())
-                            tmp_path = tmp.name
-                        fileobj.close()
+                        try:
+                            with tempfile.NamedTemporaryFile(
+                                suffix=matched_ext,
+                                delete=False,
+                            ) as tmp:
+                                tmp.write(fileobj.read())
+                                tmp_path = tmp.name
+                        finally:
+                            fileobj.close()
                         try:
                             from .. import core
 
