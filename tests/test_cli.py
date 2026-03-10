@@ -1,7 +1,8 @@
 import json
 import os
 import re
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -773,6 +774,63 @@ def test_scan_huggingface_streaming_success(mock_scan_streaming, mock_download_s
         assert output_json["files_scanned"] == 3
     except json.JSONDecodeError:
         pytest.fail("Output is not valid JSON")
+
+
+@patch("modelaudit.cli.is_huggingface_url")
+@patch("modelaudit.utils.sources.huggingface.download_model_streaming")
+@patch("modelaudit.core.scan_model_streaming")
+def test_scan_huggingface_streaming_sbom_contains_all_components(
+    mock_scan_streaming: Mock, mock_download_streaming: Mock, mock_is_hf_url: Mock, tmp_path: Path
+) -> None:
+    """Regression test for issue #671: --stream should still produce full SBOM components."""
+    mock_is_hf_url.return_value = True
+
+    # The generator itself is not consumed in this test because scan_model_streaming is mocked.
+    def file_generator():
+        yield (tmp_path / "model-00001-of-00002.safetensors", False)
+        yield (tmp_path / "model-00002-of-00002.safetensors", True)
+
+    mock_download_streaming.return_value = file_generator()
+
+    streamed_assets = [
+        {
+            "path": str(tmp_path / "model-00001-of-00002.safetensors"),
+            "type": "safetensors",
+            "size": 123,
+        },
+        {
+            "path": str(tmp_path / "model-00002-of-00002.safetensors"),
+            "type": "safetensors",
+            "size": 456,
+        },
+    ]
+    mock_scan_streaming.return_value = create_mock_scan_result(
+        bytes_scanned=579,
+        files_scanned=2,
+        assets=streamed_assets,
+    )
+
+    sbom_file = tmp_path / "streaming_sbom.json"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "scan",
+            "--stream",
+            "--sbom",
+            str(sbom_file),
+            "https://huggingface.co/test/model",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert sbom_file.exists()
+
+    sbom_json = json.loads(sbom_file.read_text(encoding="utf-8"))
+    component_names = {component["name"] for component in sbom_json.get("components", [])}
+
+    assert "model-00001-of-00002.safetensors" in component_names
+    assert "model-00002-of-00002.safetensors" in component_names
 
 
 @patch("modelaudit.cli.is_huggingface_url")
