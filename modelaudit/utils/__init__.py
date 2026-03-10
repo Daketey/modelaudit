@@ -85,7 +85,8 @@ def sanitize_archive_path(entry_name: str, base_dir: str) -> tuple[str, bool]:
     base_path = _absolute_without_resolving(base_dir)
     # Normalize separators
     entry = entry_name.replace("\\", "/")
-    if entry.startswith("/") or (len(entry) > 1 and entry[1] == ":"):
+    is_absolute = is_absolute_archive_path(entry)
+    if is_absolute:
         # Absolute paths are not allowed
         resolved = _absolute_without_resolving(base_path / entry.lstrip("/"))
         return str(resolved), False
