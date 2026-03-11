@@ -27,6 +27,9 @@ DANGEROUS_TF_OPERATIONS = {
 # Python operations that require special handling
 PYTHON_OPS = ("PyFunc", "PyCall", "PyFuncStateless", "EagerPyFunc")
 
+# Common checkpoint/restore ops that appear in benign function libraries.
+_FUNCTION_LIBRARY_BENIGN_IO_OPS = {"SaveV2", "RestoreV2", "MergeV2Checkpoints", "ShardedFilename"}
+
 # Defer protobuf availability check to avoid module-level imports
 HAS_PROTOS: bool | None = None
 
@@ -160,15 +163,17 @@ class TensorFlowSavedModelScanner(BaseScanner):
                 saved_model = SavedModel()
                 saved_model.ParseFromString(content)
                 for op_info in self._scan_tf_operations(saved_model):
+                    location_label = op_info.get("location_label") or f"node: {op_info['node_name']}"
                     result.add_check(
                         name="TensorFlow Operation Security Check",
                         passed=False,
                         message=f"Dangerous TensorFlow operation: {op_info['operation']}",
                         severity=op_info["severity"],
-                        location=f"{self.current_file_path} (node: {op_info['node_name']})",
+                        location=f"{self.current_file_path} ({location_label})",
                         details={
                             "op_type": op_info["operation"],
                             "node_name": op_info["node_name"],
+                            "location_label": op_info.get("location_label"),
                             "meta_graph": op_info.get("meta_graph", "unknown"),
                         },
                         why=get_tf_op_explanation(op_info["operation"]),
@@ -290,6 +295,7 @@ class TensorFlowSavedModelScanner(BaseScanner):
         dangerous_ops: list[dict[str, Any]] = []
         try:
             for meta_graph in saved_model.meta_graphs:
+                meta_graph_tag = meta_graph.meta_info_def.tags[0] if meta_graph.meta_info_def.tags else "unknown"
                 graph_def = meta_graph.graph_def
                 for node in graph_def.node:
                     # Skip Python ops here; they are handled by _check_python_op
@@ -300,12 +306,27 @@ class TensorFlowSavedModelScanner(BaseScanner):
                             {
                                 "operation": node.op,
                                 "node_name": node.name,
+                                "location_label": f"node: {node.name}",
                                 "severity": DANGEROUS_TF_OPERATIONS[node.op],
-                                "meta_graph": (
-                                    meta_graph.meta_info_def.tags[0] if meta_graph.meta_info_def.tags else "unknown"
-                                ),
+                                "meta_graph": meta_graph_tag,
                             }
                         )
+
+                for function in graph_def.library.function:
+                    function_name = function.signature.name or "unknown_function"
+                    for node in function.node_def:
+                        if node.op in PYTHON_OPS or node.op in _FUNCTION_LIBRARY_BENIGN_IO_OPS:
+                            continue
+                        if node.op in DANGEROUS_TF_OPERATIONS:
+                            dangerous_ops.append(
+                                {
+                                    "operation": node.op,
+                                    "node_name": node.name,
+                                    "location_label": f"function: {function_name}, node: {node.name}",
+                                    "severity": DANGEROUS_TF_OPERATIONS[node.op],
+                                    "meta_graph": meta_graph_tag,
+                                }
+                            )
         except Exception as e:  # pragma: no cover
             logger.warning(f"Failed to iterate TensorFlow graph: {e}")
         return dangerous_ops
@@ -331,6 +352,7 @@ class TensorFlowSavedModelScanner(BaseScanner):
 
         for meta_graph in saved_model.meta_graphs:
             graph_def = meta_graph.graph_def
+            meta_graph_tag = meta_graph.meta_info_def.tags[0] if meta_graph.meta_info_def.tags else "unknown"
 
             # Scan all nodes in the graph for suspicious operations
             for node in graph_def.node:
@@ -354,13 +376,48 @@ class TensorFlowSavedModelScanner(BaseScanner):
                             details={
                                 "op_type": node.op,
                                 "node_name": node.name,
-                                "meta_graph": (
-                                    meta_graph.meta_info_def.tags[0] if meta_graph.meta_info_def.tags else "unknown"
-                                ),
+                                "meta_graph": meta_graph_tag,
                             },
                             why=get_tf_op_explanation(node.op),
                         )
                     # else: already reported by generic dangerous-op pass
+
+            for function in graph_def.library.function:
+                function_name = function.signature.name or "unknown_function"
+
+                for node in function.node_def:
+                    # Count all operation types
+                    op_counts[node.op] = op_counts.get(node.op, 0) + 1
+
+                    if node.op in _FUNCTION_LIBRARY_BENIGN_IO_OPS:
+                        continue
+
+                    if node.op in self.suspicious_ops:
+                        suspicious_op_found = True
+
+                        if node.op in PYTHON_OPS:
+                            self._check_python_op(
+                                node,
+                                result,
+                                meta_graph,
+                                location_label=f"function: {function_name}, node: {node.name}",
+                            )
+                        elif node.op not in DANGEROUS_TF_OPERATIONS:
+                            result.add_check(
+                                name="TensorFlow Operation Security Check",
+                                passed=False,
+                                message=f"Suspicious TensorFlow operation: {node.op}",
+                                severity=IssueSeverity.CRITICAL,
+                                location=(f"{self.current_file_path} (function: {function_name}, node: {node.name})"),
+                                rule_code="S703",
+                                details={
+                                    "op_type": node.op,
+                                    "node_name": node.name,
+                                    "function_name": function_name,
+                                    "meta_graph": meta_graph_tag,
+                                },
+                                why=get_tf_op_explanation(node.op),
+                            )
 
                 # Check for StatefulPartitionedCall which can contain custom functions
                 if node.op == "StatefulPartitionedCall" and hasattr(node, "attr") and "f" in node.attr:
@@ -449,7 +506,13 @@ class TensorFlowSavedModelScanner(BaseScanner):
         # Enhanced protobuf vulnerability scanning
         self._scan_protobuf_vulnerabilities(saved_model, result)
 
-    def _check_python_op(self, node: Any, result: ScanResult, meta_graph: Any) -> None:
+    def _check_python_op(
+        self,
+        node: Any,
+        result: ScanResult,
+        meta_graph: Any,
+        location_label: str | None = None,
+    ) -> None:
         """Check PyFunc/PyCall operations for embedded Python code"""
         # PyFunc and PyCall can embed Python code in various ways:
         # 1. As a string attribute containing Python code
@@ -458,6 +521,7 @@ class TensorFlowSavedModelScanner(BaseScanner):
 
         code_found = False
         python_code = None
+        node_location = f"{self.current_file_path} ({location_label or f'node: {node.name}'})"
 
         # Try to extract Python code from node attributes
         if hasattr(node, "attr"):
@@ -491,7 +555,7 @@ class TensorFlowSavedModelScanner(BaseScanner):
                                     passed=False,
                                     message=f"{node.op} operation references dangerous function: {func_name}",
                                     severity=IssueSeverity.CRITICAL,
-                                    location=f"{self.current_file_path} (node: {node.name})",
+                                    location=node_location,
                                     rule_code="S902",
                                     details={
                                         "op_type": node.op,
@@ -523,7 +587,7 @@ class TensorFlowSavedModelScanner(BaseScanner):
                     passed=False,
                     message=issue_msg,
                     severity=severity,
-                    location=f"{self.current_file_path} (node: {node.name})",
+                    location=node_location,
                     rule_code="S902",
                     details={
                         "op_type": node.op,
@@ -545,7 +609,7 @@ class TensorFlowSavedModelScanner(BaseScanner):
                     message=f"{node.op} operation contains suspicious data (possibly obfuscated code)",
                     rule_code="S902",
                     severity=IssueSeverity.CRITICAL,
-                    location=f"{self.current_file_path} (node: {node.name})",
+                    location=node_location,
                     details={
                         "op_type": node.op,
                         "node_name": node.name,
@@ -565,7 +629,7 @@ class TensorFlowSavedModelScanner(BaseScanner):
                 message=f"{node.op} operation detected (unable to extract Python code)",
                 rule_code="S902",
                 severity=IssueSeverity.CRITICAL,
-                location=f"{self.current_file_path} (node: {node.name})",
+                location=node_location,
                 details={
                     "op_type": node.op,
                     "node_name": node.name,

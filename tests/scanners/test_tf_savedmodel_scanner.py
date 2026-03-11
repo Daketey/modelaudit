@@ -216,6 +216,21 @@ def test_detect_writefile_operation(tmp_path):
     assert any(i.why for i in writefile_issues), "Missing explanation for WriteFile detection"
 
 
+@pytest.mark.skipif(not has_tf_protos(), reason="TensorFlow protobuf stubs unavailable")
+@pytest.mark.parametrize("op_name", ["EagerPyFunc", "ReadFile", "WriteFile", "ParseTensor"])
+def test_detect_function_library_dangerous_ops(tmp_path, op_name):
+    """Dangerous ops in function library node_defs must be detected."""
+    model_path = _create_test_savedmodel_with_function_op(tmp_path, op_name, f"function_lib_{op_name.lower()}")
+    scanner = TensorFlowSavedModelScanner()
+    result = scanner.scan(model_path)
+
+    op_issues = [i for i in result.issues if i.message and op_name in i.message]
+    assert op_issues, f"Expected detection for function library op {op_name}"
+    assert any(i.severity == IssueSeverity.CRITICAL for i in op_issues)
+    assert any(i.why for i in op_issues), f"Missing explanation for {op_name} detection"
+    assert any(i.location and "function:" in i.location for i in op_issues)
+
+
 @pytest.mark.skipif(not has_tensorflow(), reason="TensorFlow not installed")
 def test_tf_savedmodel_scanner_with_blacklist(tmp_path):
     """Test TensorFlow SavedModel scanner with custom blacklist patterns."""
@@ -306,6 +321,36 @@ def _create_test_savedmodel_with_ops(tmp_path, op_names, model_name=None):
     saved_model_path.write_bytes(saved_model.SerializeToString())
 
     # Create variables directory (required for valid SavedModel)
+    variables_dir = model_dir / "variables"
+    variables_dir.mkdir()
+
+    return str(model_dir)
+
+
+def _create_test_savedmodel_with_function_op(tmp_path, op_name, model_name=None):
+    """Create a SavedModel with operation only inside function library."""
+    from tensorflow.core.framework.function_pb2 import FunctionDef
+    from tensorflow.core.framework.node_def_pb2 import NodeDef
+    from tensorflow.core.protobuf.saved_model_pb2 import SavedModel
+
+    if model_name is None:
+        model_name = f"test_model_function_{op_name.lower()}"
+
+    model_dir = tmp_path / model_name
+    model_dir.mkdir()
+
+    saved_model = SavedModel()
+    meta_graph = saved_model.meta_graphs.add()
+    meta_graph.meta_info_def.tags.append("serve")
+
+    function = FunctionDef()
+    function.signature.name = f"dangerous_fn_{op_name.lower()}"
+    function.node_def.extend([NodeDef(name=f"fn_node_{op_name.lower()}", op=op_name)])
+    meta_graph.graph_def.library.function.extend([function])
+
+    saved_model_path = model_dir / "saved_model.pb"
+    saved_model_path.write_bytes(saved_model.SerializeToString())
+
     variables_dir = model_dir / "variables"
     variables_dir.mkdir()
 
