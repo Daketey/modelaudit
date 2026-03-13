@@ -187,7 +187,18 @@ class KerasH5Scanner(BaseScanner):
                         if not isinstance(metrics_list, list | tuple):
                             metrics_list = []
                         for metric in metrics_list:
-                            if (
+                            if isinstance(metric, str):
+                                if metric not in KNOWN_SAFE_KERAS_METRICS:
+                                    result.add_check(
+                                        name="Custom Metric Detection",
+                                        passed=False,
+                                        message=f"Model contains custom metric: {metric}",
+                                        severity=IssueSeverity.WARNING,
+                                        location=f"{self.current_file_path} (metrics)",
+                                        details={"metric": metric},
+                                        rule_code="S305",
+                                    )
+                            elif (
                                 isinstance(metric, dict)
                                 and metric.get(
                                     "class_name",
