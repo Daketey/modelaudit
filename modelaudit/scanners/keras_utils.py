@@ -51,7 +51,22 @@ def check_lambda_dict_function(
 
     config = function_dict.get("config")
     if not isinstance(config, dict):
-        return False
+        result.add_check(
+            name="Lambda Layer Detection",
+            passed=False,
+            message=f"Lambda layer '{layer_name}' uses malformed dict-format function metadata (config is not a dict)",
+            severity=IssueSeverity.WARNING,
+            location=location,
+            details={
+                "layer_name": layer_name,
+                "layer_class": "Lambda",
+                "function_format": "dict",
+                "parse_status": "invalid_config",
+                "function_dict": function_dict,
+            },
+            why="Malformed dict-format Lambda metadata is suspicious and prevents bytecode inspection.",
+        )
+        return True
 
     code_b64 = config.get("code")
     if not code_b64 or not isinstance(code_b64, str):

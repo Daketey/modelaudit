@@ -439,7 +439,7 @@ class KerasH5Scanner(BaseScanner):
                         "layer_config": layer.get("config", {}),
                         "risk": "Custom layer classes require external code to load and may execute arbitrary logic",
                     },
-                    rule_code="S302",
+                    rule_code="S810",
                 )
 
             # Check layer configuration for suspicious strings

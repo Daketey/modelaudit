@@ -680,6 +680,12 @@ KNOWN_SAFE_KERAS_LAYER_CLASSES: frozenset[str] = frozenset(
         "RepeatVector",
         "Identity",
         "EinsumDense",
+        # Activations (added)
+        "ReLU",
+        "Softmax",
+        "LeakyReLU",
+        "PReLU",
+        "ELU",
         # Convolutional
         "Conv1D",
         "Conv2D",

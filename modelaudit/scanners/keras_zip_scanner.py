@@ -945,7 +945,7 @@ class KerasZipScanner(BaseScanner):
                             "error": str(e),
                         },
                     )
-        elif function_data and isinstance(function_data, dict):
+        elif isinstance(function_data, dict):
             # Keras 3.x dict-format Lambda: {"class_name": "__lambda__", "config": {"code": ...}}
             check_lambda_dict_function(
                 function_data, result, f"{self.current_file_path} (layer: {layer_name})", layer_name
